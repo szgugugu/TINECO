@@ -7,8 +7,13 @@ import subprocess
 import threading
 import time
 import os
+import sys
+import io
 from collections import deque
 from ctypes import windll
+from PIL import Image, ImageGrab
+import win32clipboard
+import win32con
 
 # 获取屏幕DPI和缩放比例
 def get_screen_info():
@@ -102,10 +107,10 @@ class ThemeColors:
 class SystemMonitor:
     def __init__(self, root):
         self.root = root
-        self.root.title("TINECO 运维检测工具 v1.5.0")
+        self.root.title("TINECO 运维检测工具 v1.6.0")
         
         # 版本号
-        self.version = "v1.5.0"
+        self.version = "v1.6.0"
         
         # 获取屏幕信息
         self.screen_info = get_screen_info()
@@ -114,20 +119,24 @@ class SystemMonitor:
         self.calculate_window_size()
         
         # 设置窗口图标
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        def resource_path(relative_path):
+            """ 获取资源的绝对路径，无论是开发环境还是打包后的环境 """
+            try:
+                # PyInstaller创建的临时文件夹
+                base_path = sys._MEIPASS
+            except Exception:
+                # 正常的Python环境
+                base_path = os.path.abspath(".")
+            
+            return os.path.join(base_path, relative_path)
+        
+        # 尝试设置图标
+        icon_path = resource_path("icon.ico")
         if os.path.exists(icon_path):
             try:
-                # 尝试使用PhotoImage加载图标
-                from PIL import Image, ImageTk
-                icon_image = Image.open(icon_path)
-                icon_photo = ImageTk.PhotoImage(icon_image)
-                self.root.iconphoto(True, icon_photo)
-            except ImportError:
-                # 如果PIL不可用，使用iconbitmap作为备选
                 self.root.iconbitmap(icon_path)
-            except Exception:
-                # 如果其他错误，也使用iconbitmap作为备选
-                self.root.iconbitmap(icon_path)
+            except Exception as e:
+                print(f"无法加载图标: {e}")
         
         # 设置深色主题背景
         self.root.configure(bg=ThemeColors.BG_PRIMARY)
@@ -295,11 +304,11 @@ class SystemMonitor:
     def calculate_window_size(self):
         """根据屏幕尺寸和缩放率计算窗口大小"""
         # 基准窗口尺寸（在96 DPI下）- 继续加宽窗口以满足用户需求
-        base_width = 1450  # 继续增加窗口宽度至2000
+        base_width = 1560  # 继续增加窗口宽度至2000
         base_height = 750  # 保持高度不变
         
         # 基准最小窗口尺寸
-        base_min_width = 1450  # 精简最小宽度至1000
+        base_min_width = 1560  # 精简最小宽度至1000
         base_min_height = 750  # 精简最小高度至550
         
         # 根据屏幕尺寸和缩放率调整
@@ -592,6 +601,12 @@ class SystemMonitor:
                                          font=("微软雅黑", button_font_size, "bold"), relief=tk.FLAT, padx=int(10 * scale), pady=int(5 * scale))
         self.network_stop_btn.pack(side=tk.LEFT, padx=int(5 * scale))
         
+        # 添加截图按钮
+        self.screenshot_btn = tk.Button(network_control_frame, text="截图", command=self.take_screenshot,
+                                      bg=ThemeColors.SUCCESS, fg="white", font=("微软雅黑", button_font_size, "bold"),
+                                      relief=tk.FLAT, padx=int(10 * scale), pady=int(5 * scale))
+        self.screenshot_btn.pack(side=tk.LEFT, padx=int(5 * scale))
+        
         # 网络测试状态
         self.network_status_var = tk.StringVar(value="未开始")
         label_font_size = int(10 * scale)
@@ -620,40 +635,104 @@ class SystemMonitor:
         # 测试结果标题 - 根据缩放率调整字体
         title_font_size = int(10 * scale)
         results_title = tk.Label(results_card, text="测试结果", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", title_font_size, "bold"))
-        results_title.pack(anchor=tk.W, padx=int(10 * scale), pady=(int(10 * scale), int(5 * scale)))
+        results_title.pack(anchor=tk.W, padx=int(10 * scale), pady=(int(5 * scale), int(2 * scale)))
         
-        # 测试结果框架 - 根据缩放率调整
+        # 创建统一的网格布局框架 - 包含标题和数据行
+        unified_frame = tk.Frame(results_card, bg=ThemeColors.BG_TERTIARY)
+        unified_frame.pack(fill=tk.X, padx=int(10 * scale), pady=(0, int(2 * scale)))
+        
+        # 配置网格列，确保对齐
+        unified_frame.columnconfigure(0, weight=0, minsize=int(20 * 8 * scale))  # 节点描述列
+        unified_frame.columnconfigure(1, weight=0, minsize=int(22 * 8 * scale))  # 测试地址列 - 适当增加宽度
+        unified_frame.columnconfigure(2, weight=0, minsize=int(8 * 8 * scale))   # 状态列
+        unified_frame.columnconfigure(3, weight=0, minsize=int(10 * 8 * scale))  # 延迟列
+        unified_frame.columnconfigure(4, weight=0, minsize=int(10 * 8 * scale))  # 丢包率列
+        unified_frame.columnconfigure(5, weight=0, minsize=int(10 * 8 * scale))  # 平均延迟列
+        unified_frame.columnconfigure(6, weight=0, minsize=int(10 * 8 * scale))  # 平均丢包率列
+        
+        # 设置统一的列宽
+        desc_width = int(20 * scale)
+        target_width = int(22 * scale)  # 适当增加测试地址列宽度
+        status_width = int(8 * scale)
+        time_width = int(10 * scale)
+        packet_loss_width = int(10 * scale)
+        avg_time_width = int(10 * scale)
+        avg_packet_loss_width = int(10 * scale)
+        
+        # 设置统一的间距
+        left_pad = int(2 * scale)
+        middle_pad = 0  # 移除列之间的额外间距
+        
+        header_font_size = int(9 * scale)
+        
+        # 添加列标题 - 第0行
+        # 节点描述标题
+        desc_header = tk.Label(unified_frame, text="节点描述", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", header_font_size, "bold"), width=desc_width, anchor=tk.W)
+        desc_header.grid(row=0, column=0, padx=(left_pad, 0), sticky="w")
+        
+        # 测试地址标题
+        target_header = tk.Label(unified_frame, text="测试地址", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", header_font_size, "bold"), width=target_width, anchor=tk.W)
+        target_header.grid(row=0, column=1, padx=(left_pad, 0), sticky="w")
+        
+        # 状态标题
+        status_header = tk.Label(unified_frame, text="状态", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", header_font_size, "bold"), width=status_width, anchor=tk.CENTER)
+        status_header.grid(row=0, column=2, padx=(0, middle_pad), sticky="w")
+        
+        # 当前值标题
+        current_header = tk.Label(unified_frame, text="延迟", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", header_font_size), width=time_width, anchor=tk.CENTER)
+        current_header.grid(row=0, column=3, padx=(0, middle_pad), sticky="w")
+        
+        # 当前丢包率标题
+        current_loss_header = tk.Label(unified_frame, text="丢包率", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", header_font_size), width=packet_loss_width, anchor=tk.CENTER)
+        current_loss_header.grid(row=0, column=4, padx=(0, middle_pad), sticky="w")
+        
+        # 平均值标题
+        avg_header = tk.Label(unified_frame, text="平均延迟", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", header_font_size, "bold"), width=avg_time_width, anchor=tk.CENTER)
+        avg_header.grid(row=0, column=5, padx=(0, middle_pad), sticky="w")
+        
+        # 平均丢包率标题
+        avg_loss_header = tk.Label(unified_frame, text="平均丢包", bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", header_font_size, "bold"), width=avg_packet_loss_width, anchor=tk.CENTER)
+        avg_loss_header.grid(row=0, column=6, padx=(0, middle_pad), sticky="w")
+        
+        # 初始化移动平均值数据结构
+        self.network_history = {}
+        self.moving_average_size = 10  # 移动平均窗口大小
+        
+        # 测试结果 - 在同一框架中添加数据行，从第1行开始
         self.test_results = {}
         for i, (target, description) in enumerate(self.test_targets):
-            result_frame = tk.Frame(results_card, bg=ThemeColors.BG_TERTIARY)
-            result_frame.pack(fill=tk.X, padx=int(10 * scale), pady=int(2 * scale))
-            
             label_font_size = int(9 * scale)
+            row = i + 1  # 数据行从第1行开始，第0行是标题
             
-            # 节点描述标签 - 增加宽度以完整显示中文描述
-            desc_width = int(20 * scale)
-            desc_label = tk.Label(result_frame, text=description, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", label_font_size, "bold"), width=desc_width, anchor=tk.W)
-            desc_label.pack(side=tk.LEFT, padx=int(2 * scale))
+            # 节点描述标签
+            desc_label = tk.Label(unified_frame, text=description, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", label_font_size, "bold"), width=desc_width, anchor=tk.W)
+            desc_label.grid(row=row, column=0, padx=(left_pad, 0), sticky="w")
             
-            # 测试地址标签 - 进一步增加宽度以适应长域名
-            target_width = int(32 * scale)
-            target_label = tk.Label(result_frame, text=target, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_PRIMARY, font=("微软雅黑", label_font_size), width=target_width, anchor=tk.W)
-            target_label.pack(side=tk.LEFT, padx=(int(2 * scale), 0))  # 移除右侧间距
+            # 测试地址标签
+            target_label = tk.Label(unified_frame, text=target, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_PRIMARY, font=("微软雅黑", label_font_size), width=target_width, anchor=tk.W)
+            target_label.grid(row=row, column=1, padx=(left_pad, 0), sticky="w")
             
             status_var = tk.StringVar(value="未测试")
-            status_width = int(8 * scale)
-            status_label = tk.Label(result_frame, textvariable=status_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size, "bold"), width=status_width)
-            status_label.pack(side=tk.LEFT, padx=(0, int(1 * scale)))  # 移除左侧间距，实现最小间距
+            status_label = tk.Label(unified_frame, textvariable=status_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size, "bold"), width=status_width, anchor=tk.CENTER)
+            status_label.grid(row=row, column=2, padx=(0, middle_pad), sticky="w")
             
             time_var = tk.StringVar(value="- ms")
-            time_width = int(10 * scale)
-            time_label = tk.Label(result_frame, textvariable=time_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size, "bold"), width=time_width)
-            time_label.pack(side=tk.LEFT, padx=int(1 * scale))  # 减小间距
+            time_label = tk.Label(unified_frame, textvariable=time_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size, "bold"), width=time_width, anchor=tk.CENTER)
+            time_label.grid(row=row, column=3, padx=(0, middle_pad), sticky="w")
             
             packet_loss_var = tk.StringVar(value="- %")
-            packet_loss_width = int(10 * scale)
-            packet_loss_label = tk.Label(result_frame, textvariable=packet_loss_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size), width=packet_loss_width)
-            packet_loss_label.pack(side=tk.LEFT, padx=int(1 * scale))  # 减小间距
+            packet_loss_label = tk.Label(unified_frame, textvariable=packet_loss_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.FG_SECONDARY, font=("微软雅黑", label_font_size), width=packet_loss_width, anchor=tk.CENTER)
+            packet_loss_label.grid(row=row, column=4, padx=(0, middle_pad), sticky="w")
+            
+            # 添加平均响应时间显示
+            avg_time_var = tk.StringVar(value="- ms")
+            avg_time_label = tk.Label(unified_frame, textvariable=avg_time_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", label_font_size, "bold"), width=avg_time_width, anchor=tk.CENTER)
+            avg_time_label.grid(row=row, column=5, padx=(0, middle_pad), sticky="w")
+            
+            # 添加平均丢包率显示
+            avg_packet_loss_var = tk.StringVar(value="- %")
+            avg_packet_loss_label = tk.Label(unified_frame, textvariable=avg_packet_loss_var, bg=ThemeColors.BG_TERTIARY, fg=ThemeColors.CORPORATE_BLUE, font=("微软雅黑", label_font_size, "bold"), width=avg_packet_loss_width, anchor=tk.CENTER)
+            avg_packet_loss_label.grid(row=row, column=6, padx=(0, middle_pad), sticky="w")
             
             # 存储结果数据（包括状态标签用于颜色控制）
             self.test_results[target] = {
@@ -661,7 +740,16 @@ class SystemMonitor:
                 "status_label": status_label,
                 "time_var": time_var,
                 "packet_loss_var": packet_loss_var,
-                "frame": result_frame
+                "avg_time_var": avg_time_var,
+                "avg_packet_loss_var": avg_packet_loss_var
+            }
+            
+            # 初始化移动平均值数据结构
+            self.network_history[target] = {
+                "response_times": [],  # 存储最近的响应时间
+                "packet_losses": [],   # 存储最近的丢包率
+                "avg_time_var": avg_time_var,  # 平均响应时间显示
+                "avg_packet_loss_var": avg_packet_loss_var  # 平均丢包率显示
             }
     
     def update_system_info(self):
@@ -796,10 +884,24 @@ class SystemMonitor:
             self.network_stop_btn.config(state=tk.NORMAL)
             self.network_status_var.set("测试中...")
             
+            # 初始化停止标志
+            self.network_stop_thread = False
+            
+            # 初始化线程列表
+            self.network_test_threads = []
+            
             # 重置所有测试结果
             for target, result in self.test_results.items():
                 result["status_var"].set("等待中")
                 result["time_var"].set("- ms")
+                result["packet_loss_var"].set("- %")
+            
+            # 重置移动平均值历史数据
+            for target in self.network_history:
+                self.network_history[target]["response_times"] = []
+                self.network_history[target]["packet_losses"] = []
+                self.network_history[target]["avg_time_var"].set("- ms")
+                self.network_history[target]["avg_packet_loss_var"].set("- %")
             
             self.network_test_thread = threading.Thread(target=self.test_network_targets)
             self.network_test_thread.daemon = True
@@ -807,10 +909,29 @@ class SystemMonitor:
     
     def stop_network_tests(self):
         """停止网络连通性测试"""
-        if hasattr(self, 'network_test_thread') and self.network_test_thread.is_alive():
+        if hasattr(self, 'network_stop_thread'):
             self.network_stop_thread = True
-            self.network_stop_btn.config(state=tk.DISABLED)
             self.network_status_var.set("正在停止...")
+            self.network_stop_btn.config(state=tk.DISABLED)
+            
+            # 使用异步方式检查线程状态，避免UI卡顿
+            self.root.after(100, self.check_threads_stopped)
+    
+    def check_threads_stopped(self):
+        """检查所有线程是否已停止，避免UI卡顿"""
+        all_stopped = True
+        if hasattr(self, 'network_test_threads'):
+            for thread in self.network_test_threads:
+                if thread.is_alive():
+                    all_stopped = False
+                    break
+        
+        if all_stopped:
+            # 所有线程已停止，完成测试
+            self.root.after(0, self.network_test_completed)
+        else:
+            # 仍有线程在运行，继续检查
+            self.root.after(100, self.check_threads_stopped)
     
     def test_network_targets(self):
         """网络连通性测试线程 - 同时测试所有8个地址"""
@@ -826,12 +947,12 @@ class SystemMonitor:
             threads.append(thread)
             thread.start()
         
-        # 等待所有线程完成
-        for thread in threads:
-            thread.join()
+        # 保存线程引用，确保可以停止所有线程
+        self.network_test_threads = threads
         
-        # 测试完成
-        self.root.after(0, self.network_test_completed)
+        # 不等待线程完成，让它们在后台持续运行
+        # 测试完成标记
+        self.root.after(0, self.network_test_started)
     
     def test_single_target_thread(self, target, description, index):
         """单个目标测试线程 - 持续ping"""
@@ -839,6 +960,8 @@ class SystemMonitor:
         while True:
             # 检查是否需要停止
             if hasattr(self, 'network_stop_thread') and self.network_stop_thread:
+                # 线程即将退出，更新状态为"已停止"
+                self.root.after(0, lambda: self.update_test_result(target, "已停止", "- ms", "- %"))
                 break
             
             # 执行ping测试
@@ -975,7 +1098,7 @@ class SystemMonitor:
     
     
     def update_test_result(self, target, status, response_time, packet_loss):
-        """更新单个测试结果 - 带颜色编码"""
+        """更新单个测试结果 - 带颜色编码和移动平均值计算"""
         if target in self.test_results:
             # 根据状态设置颜色和字体
             if status in ["成功", "已连接"]:
@@ -1008,13 +1131,115 @@ class SystemMonitor:
                     fg=fg_color,
                     font=("微软雅黑", label_font_size, font_weight)
                 )
+            
+            # 更新移动平均值
+            self.update_moving_average(target, response_time, packet_loss)
+    
+    def update_moving_average(self, target, response_time, packet_loss):
+        """收集测试数据，在测试结束时计算平均值"""
+        # 只在测试进行中时收集数据，不显示平均值
+        if not hasattr(self, 'network_stop_thread') or self.network_stop_thread:
+            return
+            
+        if target not in self.network_history:
+            return
+            
+        # 解析响应时间
+        try:
+            if response_time != "- ms" and "解析失败" not in response_time:
+                # 提取数值部分
+                time_value = float(response_time.split(" ")[0])
+                self.network_history[target]["response_times"].append(time_value)
+        except (ValueError, IndexError):
+            pass
+        
+        # 解析丢包率
+        try:
+            if packet_loss != "- %":
+                # 提取数值部分
+                loss_value = float(packet_loss.split("%")[0])
+                self.network_history[target]["packet_losses"].append(loss_value)
+        except (ValueError, IndexError):
+            pass
+    
+    def calculate_and_display_averages(self):
+        """计算并显示所有目标的平均值"""
+        for target in self.network_history:
+            # 计算平均响应时间
+            if self.network_history[target]["response_times"]:
+                avg_time = sum(self.network_history[target]["response_times"]) / len(self.network_history[target]["response_times"])
+                self.network_history[target]["avg_time_var"].set(f"{avg_time:.1f} ms")
+            
+            # 计算平均丢包率
+            if self.network_history[target]["packet_losses"]:
+                avg_loss = sum(self.network_history[target]["packet_losses"]) / len(self.network_history[target]["packet_losses"])
+                self.network_history[target]["avg_packet_loss_var"].set(f"{avg_loss:.1f} %")
+    
+    def network_test_started(self):
+        """网络测试已启动"""
+        self.network_status_var.set("测试中...")
+        self.network_start_btn.config(state=tk.DISABLED)
+        self.network_stop_btn.config(state=tk.NORMAL)
     
     def network_test_completed(self):
         """网络测试完成"""
+        # 计算并显示平均值
+        self.calculate_and_display_averages()
+        
         self.network_status_var.set("测试完成")
         self.network_start_btn.config(state=tk.NORMAL)
         self.network_stop_btn.config(state=tk.DISABLED)
-        self.network_stop_thread = False
+        # 注意：不要重置network_stop_thread标志，保持为True以停止平均值更新
+    
+    def take_screenshot(self):
+        """截取软件窗口并复制到剪贴板"""
+        try:
+            # 获取窗口位置和大小
+            self.root.update_idletasks()  # 确保窗口布局已更新
+            x = self.root.winfo_rootx()
+            y = self.root.winfo_rooty()
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+            
+            # 截取窗口区域
+            screenshot = ImageGrab.grab(bbox=(x, y, x + width, y + height))
+            
+            # 将图像复制到剪贴板，添加重试机制
+            output = io.BytesIO()
+            screenshot.convert("RGB").save(output, "BMP")
+            data = output.getvalue()[14:]  # 去掉BMP文件头
+            output.close()
+            
+            # 尝试打开剪贴板，最多重试3次
+            retry_count = 0
+            max_retries = 3
+            clipboard_success = False
+            
+            while retry_count < max_retries and not clipboard_success:
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32con.CF_DIB, data)
+                    win32clipboard.CloseClipboard()
+                    clipboard_success = True
+                except Exception as clipboard_error:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        # 短暂等待后重试
+                        time.sleep(0.5)
+                    else:
+                        # 最后一次尝试失败，抛出异常
+                        raise Exception(f"剪贴板操作失败: {str(clipboard_error)}")
+            
+            if clipboard_success:
+                # 显示成功提示
+                self.network_status_var.set("截图已复制到剪贴板，可使用Ctrl+V粘贴")
+                self.root.after(3000, lambda: self.network_status_var.set(""))
+            
+        except Exception as e:
+            print(f"截图失败: {e}")
+            self.network_status_var.set("截图失败，请重试")
+            self.root.after(3000, lambda: self.network_status_var.set(""))
     
     def on_closing(self):
         """窗口关闭时的处理"""
