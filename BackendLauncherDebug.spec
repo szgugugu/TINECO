@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['system_monitor.py'],
+    ['backend_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.ico', '.'), ('client_config.py', '.')],
-    hiddenimports=['tkinter', 'tkinter.ttk', 'PIL', 'PIL.Image', 'PIL.ImageGrab', 'win32clipboard', 'win32con', 'psutil', 'requests'],
+    datas=[('backend', 'backend')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='SystemMonitor',
+    name='BackendLauncherDebug',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,5 +35,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
 )
